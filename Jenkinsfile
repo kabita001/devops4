@@ -1,14 +1,23 @@
 pipeline {
     agent any
 
-    environment {
-        NODEJS_HOME = tool name: 'NodeJS' // Assumes NodeJS is configured in Jenkins tools
-        PATH = "${NODEJS_HOME}/bin:${env.PATH}"
-        SONARQUBE_SERVER = 'SonarQube'  // Name configured for SonarQube in Jenkins
-        NEXUS_URL = 'http://nexus:8081' // Nexus URL
-        NEXUS_REPO = 'devops4'
-        NEXUS_CREDENTIALS_ID = 'nexus-credentials-id' // Jenkins credentials ID for Nexus
+    tools {
+        nodejs 'NodeJS 20.18.0'
     }
+
+    environment {
+        SCANNER_HOME = tool 'SonarQube Scanner 6.2.1.4610'
+
+        NODEJS_HOME = tool name: 'NodeJS 20.18.0'
+        PATH = "${NODEJS_HOME}/bin:${env.PATH}"
+
+        NEXUS_VERSION = "nexus3"
+        NEXUS_PROTOCOL = "http"
+        NEXUS_CREDENTIALS_ID = 'NexusCreds'
+
+        SONAR_HOST_URL = "http://172.23.224.1:9000"
+    }
+
 
     stages {
         stage('Checkout') {
@@ -16,64 +25,75 @@ pipeline {
                 checkout scm
             }
         }
-        
-        stage('Install Dependencies') {
+
+        stage('Check Node Installation') {
             steps {
-                sh 'npm install'
+                sh 'node --version'
             }
         }
-        
+
+        stage('Install Dependencies') {
+            steps {
+                withCredentials([file(credentialsId: 'NexusCreds', variable: 'kabitanpmrc')]) {
+                    echo 'Building...'
+                    sh "npm install --userconfig $kabitanpmrc --registry http://172.23.224.1:8081/repository/devops4-proxy/ --loglevel verbose"
+                }
+            }
+        }
+
         stage('Build') {
             steps {
-                sh 'npm run build'  // Assumes build command is defined in package.json
+                withCredentials([file(credentialsId: 'NexusCreds', variable: 'kabitanpmrc')]) {
+                    echo 'Building...'
+                    sh "npm run build --userconfig $kabitanpmrc --registry http://172.23.224.1:8081/repository/devops4-proxy/ --loglevel verbose"
+                }
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh 'sonar-scanner -D "sonar.projectKey=devops4" -D"sonar.sources=." -D"sonar.host.url=http://localhost:9000" -D"sonar.token=sqp_ed08b1684b41bf74704052d4fa78f39040e4f788"'
-                }
-            }
-        }
-
-        stage('Quality Gate') {
-            steps {
                 script {
-                    timeout(time: 1, unit: 'MINUTES') {
-                        waitForQualityGate abortPipeline: true
+                    withSonarQubeEnv() {
+                        sh """${SCANNER_HOME}/bin/sonar-scanner \
+                        -Dsonar.sources=. \
+                        -Dsonar.host.url=http://172.23.224.1:9000 \
+                        -Dsonar.token=sqp_2f96e2e144a9de8c9bdb3c53da4de5d9e29afe61 \
+                        -Dsonar.exclusions=**/node_modules/** \
+                        -Dsonar.projectKey=devops4"""
                     }
                 }
             }
         }
-        
-        stage('Archive Artifact') {
+
+        stage('Verifying Quality Gate') {
             steps {
-                archiveArtifacts artifacts: 'dist/**', allowEmptyArchive: true
+                script {
+                    sleep(time: 30, unit: 'SECONDS')
+                    def qualityGate = waitForQualityGate()
+                    if (qualityGate.status == 'IN_PROGRESS') {
+                        sleep(time: 30, unit: 'SECONDS')
+                        error "In progress. Trying again..."
+                    }
+
+                    if (qualityGate.status != 'OK') {
+                        error "Quality Gate failed: ${qualityGate.status}"
+                    }
+                    else {
+                        echo "Quality Gate passed: ${qualityGate.status}"
+                    }
+                }
             }
         }
 
-        // stage('Deploy to Nexus') {
-        //     steps {
-        //         nexusArtifactUploader(
-        //             nexusVersion: 'nexus3',             
-        //             protocol: 'http',                   
-        //             nexusUrl: "${NEXUS_URL}",           
-        //             repository: "${NEXUS_REPO}",        
-        //             credentialsId: "${NEXUS_CREDENTIALS_ID}", 
-        //             groupId: 'com.example',             
-        //             version: '1.0.0',                   
-        //             artifacts: [
-        //                 [
-        //                     artifactId: 'my-app',
-        //                     classifier: '',
-        //                     file: 'dist/my-app.zip',    
-        //                     type: 'zip'
-        //                 ]
-        //             ]
-        //         )
-        //     }
-        // }
+
+        stage('Publishing to Nexus') {
+            steps {
+                withCredentials([file(credentialsId: 'NexusCreds', variable: 'kabitanpmrc')]) {
+                    echo 'Publishing to Nexus...'
+                    sh "npm publish --userconfig ${kabitanpmrc} --loglevel verbose"
+                }
+            }
+        }
     }
 
     post {
@@ -81,8 +101,7 @@ pipeline {
             echo 'Pipeline completed successfully!'
         }
         failure {
-            echo 'Pipeline failed.'
+            echo 'Pipeline failed!'
         }
     }
 }
-

@@ -1,6 +1,0 @@
-projectKey=devops4
-serverUrl=http://localhost:9000
-serverVersion=10.7.0.96327
-dashboardUrl=http://localhost:9000/dashboard?id=devops4
-ceTaskId=f269397f-7966-43b8-8037-d26be220a248
-ceTaskUrl=http://localhost:9000/api/ce/task?id=f269397f-7966-43b8-8037-d26be220a248
